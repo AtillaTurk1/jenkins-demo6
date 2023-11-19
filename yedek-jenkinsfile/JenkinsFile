@@ -1,0 +1,69 @@
+pipeline {   // Jenkins Pipelineı başlatmak için kullanılır. Tüm pipeline aşamalarını içerir.
+  agent {    // Agenti docker olarak seçtik.Jenkins agentını (işçi) tanımlamak için kullanılır. Jenkins agent, Jenkins master ile iletişim kurarak ve onun talimatlarını gerçekleştirerek pipeline işlemlerini yürütür.
+    docker { // Jenkins agent'ının bir Docker konteynerinde çalışmasını sağlar. Yani, Jenkins agent'ı bu Docker konteynerinde çalışacak ve burada tanımlanan imajı kullanacaktır.Docker agenti çalıştırmak için Docker pipeline pluginini önceden kurmamız lazım!!!
+      image 'atillaturk1/maven-docker-agent:v1' // Docker hub hesabımızda daha önceden hazırlayıp build edip imaj haline getirdikten sonra dockerhuba pushlamış olduğum maven ve docker içeren imagemiz olacak ve bu image dockerhesabadı/dockerimage:v1 olacak şekilde hazır olmalı
+      args '--user root -v /var/run/docker.sock:/var/run/docker.sock' // pipelineda ilk stagemizde docker imajımız container haline getirilir.Maveni ayrı olarak kurmaya gerek kalmadan dockerfilede yazan talimatlarla otomatik olarak container içerisinde çalıştırdık.Maven java uygulamamızı build edilmesini sağlar.
+    }
+  }
+  stages { // bu aşamada eğer kaynak kodumuz scm aracığıyla githubdan çekiliyorsa bu aşamya gerek yok.Fakat jenkinsfile scm yerine jenkins arayüzünde yazıyorsak checkout stage'ini kullan
+    stage('Checkout') {
+      steps {
+        sh 'echo passed'
+        // git branch: 'main', url: 'https://github.com/AtillaTurk1/jenkins-demo1.git'
+      }
+    }
+    stage('Build and Test') {
+      steps {
+        sh 'ls -ltr' // Bu komut, Jenkins işlemi içinde bir shell komutu çalıştırır. Burada, ls -ltr komutu kullanılarak mevcut dizindeki dosyaların listesi uzun formatta (-l), ters sıralanarak (-t) görüntülenir. Bu adım, Jenkins çalışma alanındaki dosyaları ve dizinleri listelemek için kullanılır.
+        // build the project and create a JAR file
+        sh 'cd spring-boot-app && mvn clean package' // cd ile çalışmak istediğimz projenin içine giriyoruz ve mvn clean package komutu ile maven toolumuz kaynak kodunun içerisinde bulunan pom.xml yani uygulamanın çalışması için gerekli olan tüm dependicileri içinde barındıran xml dosyasını kullanarak xmldeki talimatlara göre java uygulamasının build olmasını sağlıyor.
+      }                                              // Bu Maven komutu, Java projenizi temizler (clean) ve ardından kaynakları derleyerek (package) bir JAR dosyası oluşturur.Bu JAR dosyası, target dizini içinde bulunacaktır.
+    }
+    stage('Static Code Analysis') { // Bu, Jenkins Pipeline içinde bir aşama başlatır. Bu aşama, statik kod analizini gerçekleştirmek için kullanılır.
+      environment {        // Bu blok, aşama için ortam değişkenlerini tanımlar. Bu durumda, SONAR_URL adlı bir ortam değişkeni belirlenmiş ve SonarQube sunucu URL'sini (http://10.0.2.15:9000) içermektedir.
+        SONAR_URL = "http://10.0.2.15:9000" //Daha önceden sonarqubede oluşturduğumuz tokeni jenkins içerisinde secret.txtnin içine kaydedip entegrasyonu sağlamıştık.Sonarqubein url ile jenkinsten sonarqubein gerekli analizlerini yapması için bilgileri göndeririz
+      }
+      steps {      // Bu blok, Jenkins'ta gizli (secret) bilgilerin kullanımını sağlar. Bu özel durumda, sonarqube adlı bir secret (credential) kullanılır ve bu secret, SONAR_AUTH_TOKEN adlı bir değişken olarak kullanılabilir hale gelir.zaten sonarqube token ve credentialidsini jenkinsteki secret.txt içinde kaydetmiştik
+        withCredentials([string(credentialsId: 'sonarqube', variable: 'SONAR_AUTH_TOKEN')]) {
+          sh 'cd spring-boot-app && mvn sonar:sonar -Dsonar.login=$SONAR_AUTH_TOKEN -Dsonar.host.url=${SONAR_URL}' // cd ile yine projenin bulunduğu dizine gittik ve "mvn sonar:sonar" diyerek Maven ile SonarQube analizi başlattık.
+        }                                                                                                          // Sonrada SonarQube sunucusuna bağlanmak için kullanılacak olan gizli bilgi olan SONAR_AUTH_TOKEN kullandık ve -Dsonar.host.url=${SONAR_URL}: SonarQube sunucu URL'sini belirtiriz
+      }
+    }
+    stage('Build and Push Docker Image') {
+      environment {
+        DOCKER_IMAGE = "atillaturk1/jenkins-demo3:${BUILD_NUMBER}" // burada kendi dockerhub hesabımızdaki repomuza pushlama yapacaz.atillaturk1/jenkins-demo3 adında repo oluşturdum(private olarak)
+        // DOCKERFILE_LOCATION = "spring-boot-app/Dockerfile"
+        REGISTRY_CREDENTIALS = credentials('docker-cred')
+      }
+      steps {
+        script {
+            sh 'cd spring-boot-app && docker build -t ${DOCKER_IMAGE} .'
+            def dockerImage = docker.image("${DOCKER_IMAGE}")
+            docker.withRegistry('https://index.docker.io/v1/', "docker-cred") {
+                dockerImage.push()
+            }
+        }
+      }
+    }
+    stage('Update Deployment File') {
+        environment {
+            GIT_REPO_NAME = "jenkins-demo6"
+            GIT_USER_NAME = "Atillaturk1"
+        }
+        steps {
+            withCredentials([string(credentialsId: 'github', variable: 'GITHUB_TOKEN')]) {
+                sh '''
+                    git config user.email "atilla_furkan@windowslive.com"
+                    git config user.name "atillaturk1"
+                    BUILD_NUMBER=${BUILD_NUMBER}
+                    sed -i "s/replaceImageTag/${BUILD_NUMBER}/g" spring-boot-app-manifests/deployment.yml
+                    git add spring-boot-app-manifests/deployment.yml
+                    git commit -m "Update deployment image to version ${BUILD_NUMBER}"
+                    git push https://${GITHUB_TOKEN}@github.com/${GIT_USER_NAME}/${GIT_REPO_NAME} HEAD:main
+                '''
+            }
+        }
+    }
+  }
+}
+
