@@ -28,7 +28,7 @@ spec:
     spec:
       containers:
       - name: spring-boot-app
-        image: "atillaturk1/jenkins-demo2:13"
+        image: "atillaturk1/jenkins-demo2:replaceImageTag"
         imagePullPolicy: IfNotPresent
         ports:
         - name: http
